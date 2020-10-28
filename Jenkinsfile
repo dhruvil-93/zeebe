@@ -169,6 +169,15 @@ pipeline {
                 }
 
                 stage('IT (Java)') {
+                    agent {
+                        kubernetes {
+                            cloud 'zeebe-ci'
+                            label "zeebe-ci-build_${buildName}_it"
+                            defaultContainer 'jnlp'
+                            yamlFile '.ci/podSpecs/distribution.yml'
+                        }
+                    }
+
                     environment {
                       SUREFIRE_REPORT_NAME_SUFFIX = 'it-testrun'
                     }
