@@ -42,32 +42,47 @@ pipeline {
     }
 
     stages {
-        stage('Prepare') {
+        stage('Build') {
             parallel {
                 stage('Default') {
-                    steps {
-                        script {
-                            commit_summary = sh([returnStdout: true, script: 'git show -s --format=%s']).trim()
-                            displayNameFull = "#" + BUILD_NUMBER + ': ' + commit_summary
+                    stages {
+                        stage('Prepare') {
+                            steps {
+                                script {
+                                    commit_summary = sh([returnStdout: true, script: 'git show -s --format=%s']).trim()
+                                    displayNameFull = "#" + BUILD_NUMBER + ': ' + commit_summary
 
-                            if (displayNameFull.length() <= 45) {
-                            currentBuild.displayName = displayNameFull
-                            } else {
-                            displayStringHardTruncate = displayNameFull.take(45)
-                            currentBuild.displayName = displayStringHardTruncate.take(displayStringHardTruncate.lastIndexOf(" "))
+                                    if (displayNameFull.length() <= 45) {
+                                    currentBuild.displayName = displayNameFull
+                                    } else {
+                                    displayStringHardTruncate = displayNameFull.take(45)
+                                    currentBuild.displayName = displayStringHardTruncate.take(displayStringHardTruncate.lastIndexOf(" "))
+                                    }
+                                }
+                                container('maven') {
+                                    sh '.ci/scripts/distribution/prepare.sh'
+                                }
+                                container('maven-jdk8') {
+                                    sh '.ci/scripts/distribution/prepare.sh'
+                                }
+                                container('golang') {
+                                    sh '.ci/scripts/distribution/prepare-go.sh'
+                                }
                             }
                         }
-                        container('maven') {
-                            sh '.ci/scripts/distribution/prepare.sh'
-                        }
-                        container('maven-jdk8') {
-                            sh '.ci/scripts/distribution/prepare.sh'
-                        }
-                        container('golang') {
-                            sh '.ci/scripts/distribution/prepare-go.sh'
+
+                        stage('Build (Java)') {
+                            steps {
+                                container('maven') {
+                                    configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
+                                        sh '.ci/scripts/distribution/build-java.sh'
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+
                 stage('IT') {
                     agent {
                         kubernetes {
@@ -77,68 +92,43 @@ pipeline {
                             yamlFile '.ci/podSpecs/distribution.yml'
                         }
                     }
-                    steps {
-                        container('maven') {
-                            sh '.ci/scripts/distribution/prepare.sh'
+                    stages {
+                        stage('Prepare') {
+                            steps {
+                                container('maven') {
+                                    sh '.ci/scripts/distribution/prepare.sh'
+                                }
+                            }
                         }
-                    }
-                }
-            }  
-        }
 
-        stage('Build (Java)') {
-            parallel {
-                stage('Default') {
-                    steps {
-                        container('maven') {
-                            configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
-                                sh '.ci/scripts/distribution/build-java.sh'
+                        stage('Build (Java)') {
+                            steps {
+                                container('maven') {
+                                    configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
+                                        sh '.ci/scripts/distribution/build-java.sh'
+                                    }
+                                }
+                            }
+                        }
+
+                        stage('Prepare Upgrade Tests') {
+                            environment {
+                                IMAGE = "camunda/zeebe"
+                                VERSION = readMavenPom(file: 'parent/pom.xml').getVersion()
+                                TAG = 'current-test'
+                            }
+                            steps {
+                                container('maven') {
+                                    sh 'cp dist/target/zeebe-distribution-*.tar.gz zeebe-distribution.tar.gz'
+                                }
+
+                                container('docker') {
+                                    sh '.ci/scripts/docker/build.sh'
+                                    sh '.ci/scripts/docker/build_zeebe-hazelcast-exporter.sh'
+                                }
                             }
                         }
                     }
-                }
-                stage('IT') {
-                    agent {
-                        kubernetes {
-                            cloud 'zeebe-ci'
-                            label "zeebe-ci-build_${buildName}_it"
-                            defaultContainer 'jnlp'
-                            yamlFile '.ci/podSpecs/distribution.yml'
-                        }
-                    }
-                    steps {
-                        container('maven') {
-                            configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
-                                sh '.ci/scripts/distribution/build-java.sh'
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('Prepare Upgrade Tests') {
-            agent {
-                kubernetes {
-                    cloud 'zeebe-ci'
-                    label "zeebe-ci-build_${buildName}_it"
-                    defaultContainer 'jnlp'
-                    yamlFile '.ci/podSpecs/distribution.yml'
-                }
-            }
-            environment {
-                IMAGE = "camunda/zeebe"
-                VERSION = readMavenPom(file: 'parent/pom.xml').getVersion()
-                TAG = 'current-test'
-            }
-            steps {
-                container('maven') {
-                    sh 'cp dist/target/zeebe-distribution-*.tar.gz zeebe-distribution.tar.gz'
-                }
-
-                container('docker') {
-                    sh '.ci/scripts/docker/build.sh'
-                    sh '.ci/scripts/docker/build_zeebe-hazelcast-exporter.sh'
                 }
             }
         }
@@ -155,29 +145,27 @@ pipeline {
                             sh '.ci/scripts/distribution/test-go.sh'
                         }
                     }
-
                     post {
                         always {
                             junit testResults: "**/*/TEST-go.xml", keepLongStdio: true
                         }
                     }
-               }
+                }
 
-               stage('Analyse (Java)') {
-                      steps {
-                          container('maven') {
-                               configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
+                stage('Analyse (Java)') {
+                    steps {
+                        container('maven') {
+                            configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
                                     sh '.ci/scripts/distribution/analyse-java.sh'
-                               }
-                          }
-                      }
+                            }
+                        }
+                    }
                 }
 
                 stage('Unit (Java)') {
                     environment {
-                      SUREFIRE_REPORT_NAME_SUFFIX = 'java-testrun'
+                        SUREFIRE_REPORT_NAME_SUFFIX = 'java-testrun'
                     }
-
                     steps {
                         container('maven') {
                             configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
@@ -185,18 +173,17 @@ pipeline {
                             }
                         }
                     }
-
                     post {
                         always {
                             junit testResults: "**/*/TEST*${SUREFIRE_REPORT_NAME_SUFFIX}*.xml", keepLongStdio: true
                         }
                     }
                 }
+
                 stage('Unit 8 (Java 8)') {
                     environment {
-                      SUREFIRE_REPORT_NAME_SUFFIX = 'java8-testrun'
+                        SUREFIRE_REPORT_NAME_SUFFIX = 'java8-testrun'
                     }
-
                     steps {
                         container('maven-jdk8') {
                             configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
@@ -204,36 +191,6 @@ pipeline {
                             }
                         }
                     }
-
-                    post {
-                        always {
-                            junit testResults: "**/*/TEST*${SUREFIRE_REPORT_NAME_SUFFIX}*.xml", keepLongStdio: true
-                        }
-                    }
-                }
-
-                stage('IT (Java)') {
-                    agent {
-                        kubernetes {
-                            cloud 'zeebe-ci'
-                            label "zeebe-ci-build_${buildName}_it"
-                            defaultContainer 'jnlp'
-                            yamlFile '.ci/podSpecs/distribution.yml'
-                        }
-                    }
-
-                    environment {
-                        SUREFIRE_REPORT_NAME_SUFFIX = 'it-testrun'
-                    }
-
-                    steps {
-                        container('maven') {
-                            configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
-                                sh '.ci/scripts/distribution/it-java.sh'
-                            }
-                        }
-                    }
-
                     post {
                         always {
                             junit testResults: "**/*/TEST*${SUREFIRE_REPORT_NAME_SUFFIX}*.xml", keepLongStdio: true
@@ -249,10 +206,46 @@ pipeline {
                             }
                         }
                     }
-
                     post {
                         always {
                             junit testResults: "bpmn-tck/**/*/TEST*.xml", keepLongStdio: true
+                        }
+                    }
+                }
+
+                stage('IT (Java)') {
+                    agent {
+                        kubernetes {
+                            cloud 'zeebe-ci'
+                            label "zeebe-ci-build_${buildName}_it"
+                            defaultContainer 'jnlp'
+                            yamlFile '.ci/podSpecs/distribution.yml'
+                        }
+                    }
+                    environment {
+                        SUREFIRE_REPORT_NAME_SUFFIX = 'it-testrun'
+                        NEXUS = credentials("camunda-nexus")
+                    }
+                    steps {
+                        container('maven') {
+                            configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
+                                sh '.ci/scripts/distribution/it-java.sh'
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            junit testResults: "**/*/TEST*${SUREFIRE_REPORT_NAME_SUFFIX}*.xml", keepLongStdio: true
+                        }
+                        failure {
+                            zip zipFile: 'test-reports.zip', archive: true, glob: "**/*/surefire-reports/**"
+                            archive "**/hs_err_*.log"
+
+                            script {
+                            if (fileExists('./target/FlakyTests.txt')) {
+                                currentBuild.description = "Flaky Tests: <br>" + readFile('./target/FlakyTests.txt').split('\n').join('<br>')
+                            }
+                            }
                         }
                     }
                 }
@@ -261,13 +254,13 @@ pipeline {
             post {
                 always {
                     jacoco(
-                          execPattern: '**/*.exec',
-                          classPattern: '**/target/classes',
-                          sourcePattern: '**/src/main/java,**/generated-sources/protobuf/java,**/generated-sources/assertj-assertions,**/generated-sources/sbe',
-                          exclusionPattern: '**/io/zeebe/gateway/protocol/**,'
+                        execPattern: '**/*.exec',
+                        classPattern: '**/target/classes',
+                        sourcePattern: '**/src/main/java,**/generated-sources/protobuf/java,**/generated-sources/assertj-assertions,**/generated-sources/sbe',
+                        exclusionPattern: '**/io/zeebe/gateway/protocol/**,'
                                             + '**/*Encoder.class,**/*Decoder.class,**/MetaAttribute.class,'
                                             + '**/io/zeebe/protocol/record/**/*Assert.class,**/io/zeebe/protocol/record/Assertions.class,', // classes from generated resources
-                          runAlways: true
+                        runAlways: true
                     )
                     zip zipFile: 'test-coverage-reports.zip', archive: true, glob: "**/target/site/jacoco/**"
                 }
@@ -276,9 +269,9 @@ pipeline {
                     archive "**/hs_err_*.log"
 
                     script {
-                      if (fileExists('./target/FlakyTests.txt')) {
-                          currentBuild.description = "Flaky Tests: <br>" + readFile('./target/FlakyTests.txt').split('\n').join('<br>')
-                      }
+                    if (fileExists('./target/FlakyTests.txt')) {
+                        currentBuild.description = "Flaky Tests: <br>" + readFile('./target/FlakyTests.txt').split('\n').join('<br>')
+                    }
                     }
                 }
             }
