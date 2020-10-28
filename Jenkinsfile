@@ -180,11 +180,14 @@ pipeline {
 
                     environment {
                       SUREFIRE_REPORT_NAME_SUFFIX = 'it-testrun'
+                      NEXUS = credentials("camunda-nexus")
                     }
 
                     steps {
                         container('maven') {
                             configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
+                                sh '.ci/scripts/distribution/prepare.sh'
+                                sh '.ci/scripts/distribution/build-java.sh'
                                 sh '.ci/scripts/distribution/it-java.sh'
                             }
                         }
