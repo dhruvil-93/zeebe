@@ -43,48 +43,94 @@ pipeline {
 
     stages {
         stage('Prepare') {
-            steps {
-                script {
-                    commit_summary = sh([returnStdout: true, script: 'git show -s --format=%s']).trim()
-                    displayNameFull = "#" + BUILD_NUMBER + ': ' + commit_summary
+            parallel {
+                stage('Default') {
+                    steps {
+                        script {
+                            commit_summary = sh([returnStdout: true, script: 'git show -s --format=%s']).trim()
+                            displayNameFull = "#" + BUILD_NUMBER + ': ' + commit_summary
 
-                    if (displayNameFull.length() <= 45) {
-                      currentBuild.displayName = displayNameFull
-                    } else {
-                      displayStringHardTruncate = displayNameFull.take(45)
-                      currentBuild.displayName = displayStringHardTruncate.take(displayStringHardTruncate.lastIndexOf(" "))
+                            if (displayNameFull.length() <= 45) {
+                            currentBuild.displayName = displayNameFull
+                            } else {
+                            displayStringHardTruncate = displayNameFull.take(45)
+                            currentBuild.displayName = displayStringHardTruncate.take(displayStringHardTruncate.lastIndexOf(" "))
+                            }
+                        }
+                        container('maven') {
+                            sh '.ci/scripts/distribution/prepare.sh'
+                        }
+                        container('maven-jdk8') {
+                            sh '.ci/scripts/distribution/prepare.sh'
+                        }
+                        container('golang') {
+                            sh '.ci/scripts/distribution/prepare-go.sh'
+                        }
                     }
                 }
-                container('maven') {
-                    sh '.ci/scripts/distribution/prepare.sh'
+                stage('IT') {
+                    agent {
+                        kubernetes {
+                            cloud 'zeebe-ci'
+                            label "zeebe-ci-build_${buildName}_it"
+                            defaultContainer 'jnlp'
+                            yamlFile '.ci/podSpecs/distribution.yml'
+                        }
+                    }
+                    steps {
+                        container('maven') {
+                            sh '.ci/scripts/distribution/prepare.sh'
+                        }
+                    }
                 }
-                container('maven-jdk8') {
-                    sh '.ci/scripts/distribution/prepare.sh'
-                }
-                container('golang') {
-                    sh '.ci/scripts/distribution/prepare-go.sh'
-                }
-
-            }
+            }  
         }
 
         stage('Build (Java)') {
-            steps {
-                container('maven') {
-                    configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
-                        sh '.ci/scripts/distribution/build-java.sh'
+            parallel {
+                stage('Default') {
+                    steps {
+                        container('maven') {
+                            configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
+                                sh '.ci/scripts/distribution/build-java.sh'
+                            }
+                        }
+                    }
+                }
+                stage('IT') {
+                    agent {
+                        kubernetes {
+                            cloud 'zeebe-ci'
+                            label "zeebe-ci-build_${buildName}_it"
+                            defaultContainer 'jnlp'
+                            yamlFile '.ci/podSpecs/distribution.yml'
+                        }
+                    }
+                    steps {
+                        container('maven') {
+                            configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
+                                sh '.ci/scripts/distribution/build-java.sh'
+                            }
+                        }
                     }
                 }
             }
         }
 
-        stage('Prepare Tests') {
+        stage('Prepare Upgrade Tests') {
+            agent {
+                kubernetes {
+                    cloud 'zeebe-ci'
+                    label "zeebe-ci-build_${buildName}_it"
+                    defaultContainer 'jnlp'
+                    yamlFile '.ci/podSpecs/distribution.yml'
+                }
+            }
             environment {
                 IMAGE = "camunda/zeebe"
                 VERSION = readMavenPom(file: 'parent/pom.xml').getVersion()
                 TAG = 'current-test'
             }
-
             steps {
                 container('maven') {
                     sh 'cp dist/target/zeebe-distribution-*.tar.gz zeebe-distribution.tar.gz'
@@ -96,8 +142,6 @@ pipeline {
                 }
             }
         }
-
-
 
         stage('Test') {
             parallel {
@@ -180,24 +224,9 @@ pipeline {
 
                     environment {
                         SUREFIRE_REPORT_NAME_SUFFIX = 'it-testrun'
-                        NEXUS = credentials("camunda-nexus")
-                        IMAGE = "camunda/zeebe"
-                        VERSION = readMavenPom(file: 'parent/pom.xml').getVersion()
-                        TAG = 'current-test'
                     }
 
                     steps {
-                        container('maven') {
-                            configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
-                                sh '.ci/scripts/distribution/prepare.sh'
-                                sh '.ci/scripts/distribution/build-java.sh'
-                                sh 'cp dist/target/zeebe-distribution-*.tar.gz zeebe-distribution.tar.gz'
-                            }
-                        }
-                        container('docker') {
-                            sh '.ci/scripts/docker/build.sh'
-                            sh '.ci/scripts/docker/build_zeebe-hazelcast-exporter.sh'
-                        }
                         container('maven') {
                             configFileProvider([configFile(fileId: 'maven-nexus-settings-zeebe', variable: 'MAVEN_SETTINGS_XML')]) {
                                 sh '.ci/scripts/distribution/it-java.sh'
